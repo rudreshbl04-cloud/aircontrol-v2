@@ -1,68 +1,95 @@
 """
-AirControl Gesture Recognition Module.
+Two-Hand Gesture Recognition Engine for AirControl V2.
 
 Responsible for:
-- Finger state analysis (extended vs. folded)
-- Pinch detection
-- Fist detection
-- Open-palm detection and 2-second safety hold timer
-- Index and Index+Middle gesture classification
-- Three fingers + thumb-index distance measurement for volume
-- Horizontal swipe detection (Left/Right) with cooldowns and history tracking
+- Normalized finger state extraction (extended vs folded)
+- Right Hand: Cursor pose (Index Up), Click pose (Thumb-Index Pinch)
+- Left Hand: Scroll pose (Index+Middle Up), Volume pose (Three Fingers),
+  Media Play/Pause (Open Palm in Media Mode), Presentation Swipe (in Presentation Mode)
+- Two-Hand Zoom: Both hands pinched simultaneously with baseline distance tracking
+- Action priority arbitration and debouncing
 
-No computer control (mouse/keyboard) is executed in this module.
+Simulated / Logged actions are produced for Stage 2 (no real OS automation yet).
 """
 
 import math
 import time
-from typing import List, Tuple, Optional, Dict, Any
 from collections import deque
+from dataclasses import dataclass, field
+from typing import Optional, List, Tuple, Dict, Any
 
 import config
+from src.hand_roles import AssignedHand, RoleFrameResult
 
 
 def euclidean_distance(p1: Tuple[float, float, float], p2: Tuple[float, float, float]) -> float:
-    """Calculates 2D normalized Euclidean distance between two landmark points."""
+    """Calculates 2D normalized Euclidean distance between two points."""
     return math.hypot(p1[0] - p2[0], p1[1] - p2[1])
 
 
-class GestureRecognizer:
+@dataclass
+class HandPose:
+    """Classified pose and parameters for a single hand."""
+    name: str                        # e.g. "INDEX UP", "PINCH", "SCROLL POSE", "THREE FINGERS", "OPEN PALM", "FIST", "IDLE"
+    action: str                      # e.g. "MOVE CURSOR", "LEFT CLICK", "SCROLL", "VOLUME", "PLAY/PAUSE", "SWIPE", "NONE"
+    pinch_distance: float = 1.0      # Thumb tip to index tip distance
+    volume_pct: Optional[float] = None
+    scroll_dy: float = 0.0           # Vertical displacement for scrolling
+    swipe_direction: Optional[str] = None
+    fingers: Dict[str, bool] = field(default_factory=dict)
+
+
+@dataclass
+class TwoHandGestureResult:
+    """Arbitrated gesture recognition result for the current frame."""
+    right: Optional[HandPose] = None
+    left: Optional[HandPose] = None
+    is_zoom_active: bool = False
+    zoom_distance: float = 0.0
+    zoom_delta: float = 0.0          # Positive = zoom in, Negative = zoom out
+    action_summary: str = "IDLE"     # Plain English summary of active laptop control
+    priority_level: str = "NORMAL"   # "SAFETY", "AMBIGUOUS", "ZOOM", "DISCRETE", "CONTINUOUS", "IDLE"
+
+
+class TwoHandGestureRecognizer:
     """
-    Analyzes normalized hand landmarks to classify gestures and manage
-    safety state toggles (Open Palm hold) and swipe motion tracking.
+    Evaluates physical Left and Right hand landmarks to recognize gestures,
+    arbitrate priorities, and generate debounced actions.
     """
 
     def __init__(self) -> None:
-        # History queue of (timestamp, x_position) for detecting horizontal swipes
-        # Holds approximately 15-20 recent samples (~0.4-0.5s of tracking)
-        self.position_history: deque = deque(maxlen=20)
-        
-        # Open-palm hold timer for safety ON/PAUSED toggle
-        self.palm_hold_start_time: Optional[float] = None
-        self.palm_toggle_triggered: bool = False
-        self.is_paused: bool = False
-
-        # Swipe state and cooldown tracker
-        self.last_swipe_time: float = 0.0
+        # History queue for Left hand horizontal swipe detection
+        self.left_swipe_history: deque = deque(maxlen=20)
+        self.last_left_swipe_time: float = 0.0
         self.active_swipe_gesture: Optional[str] = None
         self.swipe_display_until: float = 0.0
 
+        # Left hand scroll baseline tracking
+        self.last_scroll_y: Optional[float] = None
+
+        # Left hand open palm hold timer for Play/Pause in Media Mode
+        self.left_palm_start_time: Optional[float] = None
+        self.last_play_pause_time: float = 0.0
+
+        # Right hand click debounce
+        self.right_pinch_was_active: bool = False
+        self.last_click_time: float = 0.0
+
+        # Two-Hand Zoom baseline tracking
+        self.zoom_entry_start_time: Optional[float] = None
+        self.is_zooming: bool = False
+        self.zoom_baseline_distance: Optional[float] = None
+        self.last_zoom_step_time: float = 0.0
+
     def get_finger_states(self, landmarks: List[Tuple[float, float, float]]) -> Dict[str, bool]:
         """
-        Determines whether each finger is extended (True) or folded (False).
-
-        MediaPipe Landmark Indices:
-            Wrist: 0
-            Thumb:  1 (CMC),  2 (MCP),  3 (IP),  4 (TIP)
-            Index:  5 (MCP),  6 (PIP),  7 (DIP), 8 (TIP)
-            Middle: 9 (MCP), 10 (PIP), 11 (DIP), 12 (TIP)
-            Ring:  13 (MCP), 14 (PIP), 15 (DIP), 16 (TIP)
-            Pinky: 17 (MCP), 18 (PIP), 19 (DIP), 20 (TIP)
+        Calculates extended vs folded states for all 5 fingers.
+        Normalized ratios based on wrist and MCP joints.
         """
         wrist = landmarks[0]
 
-        # For non-thumb fingers: extended if TIP is higher than PIP (smaller y)
-        # and distance from wrist to TIP is greater than distance from wrist to PIP
+        # Fingers: Index (8), Middle (12), Ring (16), Pinky (20)
+        # Extended if TIP is further from wrist than PIP joint and TIP y is higher
         index_extended = (landmarks[8][1] < landmarks[6][1]) and (
             euclidean_distance(wrist, landmarks[8]) > euclidean_distance(wrist, landmarks[6])
         )
@@ -76,12 +103,12 @@ class GestureRecognizer:
             euclidean_distance(wrist, landmarks[20]) > euclidean_distance(wrist, landmarks[18])
         )
 
-        # For thumb: extended if tip is far from pinky base and wrist
+        # Thumb: extended if tip is far from pinky base
         thumb_tip = landmarks[4]
         thumb_ip = landmarks[3]
         pinky_mcp = landmarks[17]
         thumb_extended = (
-            euclidean_distance(thumb_tip, pinky_mcp) > euclidean_distance(thumb_ip, pinky_mcp) * 1.15
+            euclidean_distance(thumb_tip, pinky_mcp) > euclidean_distance(thumb_ip, pinky_mcp) * 1.12
         ) and (
             euclidean_distance(wrist, thumb_tip) > euclidean_distance(wrist, landmarks[2])
         )
@@ -94,229 +121,293 @@ class GestureRecognizer:
             "pinky": pinky_extended,
         }
 
-    def detect_swipe(self, current_x: float, current_time: float) -> Optional[str]:
-        """
-        Evaluates recent horizontal position history to detect deliberate swipe motions.
-        """
-        self.position_history.append((current_time, current_x))
-
-        # Check if swipe cooldown is currently active
-        if current_time - self.last_swipe_time < config.SWIPE_COOLDOWN:
-            return None
-
-        # Look back ~0.25 to ~0.40 seconds in the position history
-        old_x = None
-        for t, x in self.position_history:
-            if 0.20 <= (current_time - t) <= 0.45:
-                old_x = x
-                break
-
-        if old_x is None:
-            return None
-
-        # Calculate horizontal displacement
-        dx = current_x - old_x
-
-        if abs(dx) >= config.SWIPE_THRESHOLD:
-            self.last_swipe_time = current_time
-            self.position_history.clear()
-            # Positive dx means movement to the right, negative dx means to the left
-            if dx > 0:
-                self.active_swipe_gesture = "SWIPE RIGHT"
-            else:
-                self.active_swipe_gesture = "SWIPE LEFT"
-            self.swipe_display_until = current_time + 0.60
-            return self.active_swipe_gesture
-
-        return None
-
-    def recognize(
-        self,
-        landmarks: Optional[List[Tuple[float, float, float]]],
-        current_time: Optional[float] = None,
-    ) -> Dict[str, Any]:
-        """
-        Processes normalized landmarks and returns recognized gesture and diagnostic details.
-
-        Returns a dictionary containing:
-            - 'gesture': Current recognized gesture name
-            - 'status': "ON" or "PAUSED"
-            - 'palm_hold_progress': float 0.0 to 1.0 (for UI hold bar)
-            - 'volume_pct': float 0.0 to 100.0 (if three-finger volume active)
-            - 'pinch_distance': float
-            - 'fingers': Dict of finger extended booleans
-        """
-        if current_time is None:
-            current_time = time.perf_counter()
-
-        # Handle persistent visual display of recently triggered swipe
-        if current_time < self.swipe_display_until and self.active_swipe_gesture:
-            display_swipe = self.active_swipe_gesture
-        else:
-            display_swipe = None
-            self.active_swipe_gesture = None
-
-        # If no hand is detected in the current frame
-        if landmarks is None or len(landmarks) < 21:
-            # Reset open-palm timer if hand leaves the frame
-            self.palm_hold_start_time = None
-            self.palm_toggle_triggered = False
-            self.position_history.clear()
-            return {
-                "gesture": display_swipe if display_swipe else "NO HAND",
-                "status": "PAUSED" if self.is_paused else "ON",
-                "palm_hold_progress": 0.0,
-                "volume_pct": None,
-                "pinch_distance": None,
-                "fingers": None,
-            }
-
+    def _classify_right_hand(self, hand: AssignedHand, current_time: float) -> HandPose:
+        """Classifies gestures dedicated to the physical RIGHT hand (Cursor & Click)."""
+        landmarks = hand.landmarks
         fingers = self.get_finger_states(landmarks)
-        wrist = landmarks[0]
+
         thumb_tip = landmarks[4]
         index_tip = landmarks[8]
-
         pinch_dist = euclidean_distance(thumb_tip, index_tip)
 
-        # Palm center / wrist x-coordinate used for swipe motion
-        hand_x = landmarks[9][0]  # Middle finger MCP represents hand center well
-        detected_swipe = self.detect_swipe(hand_x, current_time)
-        if detected_swipe:
-            display_swipe = detected_swipe
+        num_up = sum([fingers["index"], fingers["middle"], fingers["ring"], fingers["pinky"]])
 
-        num_fingers_up = sum([fingers["index"], fingers["middle"], fingers["ring"], fingers["pinky"]])
-        all_five_up = fingers["thumb"] and num_fingers_up == 4
+        # 1. Right Click (Pinch between Thumb and Index)
+        # Pinch active when distance < threshold and fingers are not curled into a fist
+        if pinch_dist < config.PINCH_THRESHOLD and num_up > 0:
+            is_new_pinch = not self.right_pinch_was_active
+            self.right_pinch_was_active = True
+            
+            action = "LEFT CLICK" if is_new_pinch else "HOLDING CLICK"
+            return HandPose(
+                name="PINCH",
+                action=action,
+                pinch_distance=pinch_dist,
+                fingers=fingers,
+            )
+
+        self.right_pinch_was_active = False
+
+        # 2. Right Cursor Movement (Index Finger Up, other fingers folded)
+        if fingers["index"] and not fingers["middle"] and not fingers["ring"] and not fingers["pinky"]:
+            return HandPose(
+                name="INDEX UP",
+                action="MOVE CURSOR",
+                pinch_distance=pinch_dist,
+                fingers=fingers,
+            )
+
+        # 3. Idle / Rest pose
+        return HandPose(
+            name="IDLE",
+            action="NONE",
+            pinch_distance=pinch_dist,
+            fingers=fingers,
+        )
+
+    def _classify_left_hand(
+        self,
+        hand: AssignedHand,
+        current_time: float,
+        mode: str = "DESKTOP",
+    ) -> HandPose:
+        """Classifies gestures dedicated to the physical LEFT hand (Scroll, Volume, Media, Swipe)."""
+        landmarks = hand.landmarks
+        fingers = self.get_finger_states(landmarks)
+
+        thumb_tip = landmarks[4]
+        index_tip = landmarks[8]
+        pinch_dist = euclidean_distance(thumb_tip, index_tip)
+        hand_center_y = hand.center[1]
+        hand_center_x = hand.center[0]
+
+        num_up = sum([fingers["index"], fingers["middle"], fingers["ring"], fingers["pinky"]])
+        is_open_palm = (num_up == 4 and fingers["thumb"])
 
         # ----------------------------------------------------------------------
-        # 1. GESTURE 7: OPEN PALM (SAFETY TOGGLE HELD FOR 2 SECONDS)
+        # A. PRESENTATION MODE: Horizontal Swipe Detection (Slides)
         # ----------------------------------------------------------------------
-        palm_progress = 0.0
-        # Consider open palm if all 4 main fingers are up and thumb is extended
-        is_open_palm = (num_fingers_up == 4 and fingers["thumb"])
+        if mode == "PRESENTATION":
+            self.left_swipe_history.append((current_time, hand_center_x))
+            if current_time - self.last_left_swipe_time >= config.SWIPE_COOLDOWN:
+                # Look back ~0.25 to ~0.40s
+                old_x = None
+                for t, x in self.left_swipe_history:
+                    if 0.20 <= (current_time - t) <= 0.45:
+                        old_x = x
+                        break
+                if old_x is not None:
+                    dx = hand_center_x - old_x
+                    if abs(dx) >= config.SWIPE_THRESHOLD:
+                        self.last_left_swipe_time = current_time
+                        self.left_swipe_history.clear()
+                        direction = "NEXT SLIDE (RIGHT)" if dx > 0 else "PREV SLIDE (LEFT)"
+                        self.active_swipe_gesture = direction
+                        self.swipe_display_until = current_time + 0.60
+                        return HandPose(
+                            name="SWIPE",
+                            action=direction,
+                            swipe_direction=direction,
+                            pinch_distance=pinch_dist,
+                            fingers=fingers,
+                        )
 
-        if is_open_palm:
-            if self.palm_hold_start_time is None:
-                self.palm_hold_start_time = current_time
-                self.palm_toggle_triggered = False
+            if current_time < self.swipe_display_until and self.active_swipe_gesture:
+                return HandPose(
+                    name="SWIPE",
+                    action=self.active_swipe_gesture,
+                    swipe_direction=self.active_swipe_gesture,
+                    pinch_distance=pinch_dist,
+                    fingers=fingers,
+                )
 
-            elapsed = current_time - self.palm_hold_start_time
-            palm_progress = min(1.0, elapsed / config.OPEN_PALM_HOLD_SECONDS)
-
-            # Trigger toggle once hold duration is reached
-            if elapsed >= config.OPEN_PALM_HOLD_SECONDS and not self.palm_toggle_triggered:
-                self.is_paused = not self.is_paused
-                self.palm_toggle_triggered = True
-                print(f"[AirControl Safety] Open palm hold completed. State toggled to: {'PAUSED' if self.is_paused else 'ON'}")
+        # ----------------------------------------------------------------------
+        # B. MEDIA MODE: Open Palm Held Briefly for Play/Pause
+        # ----------------------------------------------------------------------
+        if mode == "MEDIA" and is_open_palm:
+            if self.left_palm_start_time is None:
+                self.left_palm_start_time = current_time
+            
+            elapsed = current_time - self.left_palm_start_time
+            if elapsed >= 0.80 and (current_time - self.last_play_pause_time >= config.PLAY_PAUSE_COOLDOWN):
+                self.last_play_pause_time = current_time
+                self.left_palm_start_time = None
+                return HandPose(
+                    name="OPEN PALM",
+                    action="PLAY/PAUSE",
+                    pinch_distance=pinch_dist,
+                    fingers=fingers,
+                )
+            return HandPose(
+                name="OPEN PALM",
+                action=f"HOLDING PLAY/PAUSE ({elapsed:.1f}s)",
+                pinch_distance=pinch_dist,
+                fingers=fingers,
+            )
         else:
-            self.palm_hold_start_time = None
-            self.palm_toggle_triggered = False
-            palm_progress = 0.0
-
-        current_status = "PAUSED" if self.is_paused else "ON"
-
-        # If a swipe was just detected, prioritize its display
-        if display_swipe:
-            return {
-                "gesture": display_swipe,
-                "status": current_status,
-                "palm_hold_progress": palm_progress,
-                "volume_pct": None,
-                "pinch_distance": pinch_dist,
-                "fingers": fingers,
-            }
+            self.left_palm_start_time = None
 
         # ----------------------------------------------------------------------
-        # 2. GESTURE 6: FIST (ALL FINGERS FOLDED INTO PALM)
+        # C. LEFT SCROLL: Index + Middle Fingers Extended (Peace Sign)
         # ----------------------------------------------------------------------
-        # When all four fingers (index, middle, ring, pinky) are folded into palm
-        if num_fingers_up == 0 and not fingers["thumb"]:
-            return {
-                "gesture": "FIST",
-                "status": current_status,
-                "palm_hold_progress": 0.0,
-                "volume_pct": None,
-                "pinch_distance": pinch_dist,
-                "fingers": fingers,
-            }
+        if fingers["index"] and fingers["middle"] and not fingers["ring"] and not fingers["pinky"]:
+            scroll_dy = 0.0
+            if self.last_scroll_y is not None:
+                scroll_dy = self.last_scroll_y - hand_center_y  # Moving up is positive dy
+
+            self.last_scroll_y = hand_center_y
+            action = "SCROLL UP" if scroll_dy > 0.01 else ("SCROLL DOWN" if scroll_dy < -0.01 else "SCROLL IDLE")
+            return HandPose(
+                name="INDEX + MIDDLE (PEACE)",
+                action=action,
+                scroll_dy=scroll_dy,
+                pinch_distance=pinch_dist,
+                fingers=fingers,
+            )
+
+        self.last_scroll_y = None
 
         # ----------------------------------------------------------------------
-        # 3. GESTURE 2: PINCH (INDEX + THUMB)
+        # D. LEFT VOLUME: Three Fingers Extended (Index, Middle, Ring)
         # ----------------------------------------------------------------------
-        # Requires pinch distance < threshold and index finger extended or semi-extended
-        if pinch_dist < config.PINCH_THRESHOLD and num_fingers_up > 0:
-            return {
-                "gesture": "PINCH",
-                "status": current_status,
-                "palm_hold_progress": 0.0,
-                "volume_pct": None,
-                "pinch_distance": pinch_dist,
-                "fingers": fingers,
-            }
-
-        # ----------------------------------------------------------------------
-        # 4. GESTURE 7: OPEN PALM
-        # ----------------------------------------------------------------------
-        if is_open_palm:
-            return {
-                "gesture": "OPEN PALM",
-                "status": current_status,
-                "palm_hold_progress": palm_progress,
-                "volume_pct": None,
-                "pinch_distance": pinch_dist,
-                "fingers": fingers,
-            }
-
-        # ----------------------------------------------------------------------
-        # 5. GESTURE 4: THREE FINGERS UP + THUMB-INDEX DISTANCE (VOLUME)
-        # ----------------------------------------------------------------------
-        # Index, Middle, Ring extended, Pinky folded
         if fingers["index"] and fingers["middle"] and fingers["ring"] and not fingers["pinky"]:
-            # Map distance to 0% - 100% volume
             clamped_dist = max(config.VOLUME_MIN_DISTANCE, min(pinch_dist, config.VOLUME_MAX_DISTANCE))
             vol_range = config.VOLUME_MAX_DISTANCE - config.VOLUME_MIN_DISTANCE
             vol_pct = ((clamped_dist - config.VOLUME_MIN_DISTANCE) / vol_range) * 100.0
 
-            return {
-                "gesture": "THREE FINGERS (VOLUME)",
-                "status": current_status,
-                "palm_hold_progress": 0.0,
-                "volume_pct": vol_pct,
-                "pinch_distance": pinch_dist,
-                "fingers": fingers,
-            }
+            return HandPose(
+                name="THREE FINGERS",
+                action=f"VOLUME ({int(vol_pct)}%)",
+                volume_pct=vol_pct,
+                pinch_distance=pinch_dist,
+                fingers=fingers,
+            )
+
+        # Idle
+        return HandPose(
+            name="IDLE",
+            action="NONE",
+            pinch_distance=pinch_dist,
+            fingers=fingers,
+        )
+
+    def process(
+        self,
+        roles: RoleFrameResult,
+        is_paused: bool = False,
+        mode: str = "DESKTOP",
+        current_time: Optional[float] = None,
+    ) -> TwoHandGestureResult:
+        """
+        Processes tracked physical hands, classifies poses, and arbitrates action priorities.
+        """
+        if current_time is None:
+            current_time = time.perf_counter()
+
+        result = TwoHandGestureResult()
 
         # ----------------------------------------------------------------------
-        # 6. GESTURE 3: INDEX + MIDDLE FINGERS UP (SCROLL)
+        # Priority 1: Global Safety Pause
         # ----------------------------------------------------------------------
-        if fingers["index"] and fingers["middle"] and not fingers["ring"] and not fingers["pinky"]:
-            return {
-                "gesture": "INDEX + MIDDLE",
-                "status": current_status,
-                "palm_hold_progress": 0.0,
-                "volume_pct": None,
-                "pinch_distance": pinch_dist,
-                "fingers": fingers,
-            }
+        if is_paused:
+            result.action_summary = "PAUSED (ALL AUTOMATION FROZEN)"
+            result.priority_level = "SAFETY"
+            self.reset_baselines()
+            return result
 
         # ----------------------------------------------------------------------
-        # 7. GESTURE 1: INDEX FINGER UP (MOUSE MOVE)
+        # Priority 2: Ambiguous Roles or Overlapping Hands
         # ----------------------------------------------------------------------
-        if fingers["index"] and not fingers["middle"] and not fingers["ring"] and not fingers["pinky"]:
-            return {
-                "gesture": "INDEX FINGER UP",
-                "status": current_status,
-                "palm_hold_progress": 0.0,
-                "volume_pct": None,
-                "pinch_distance": pinch_dist,
-                "fingers": fingers,
-            }
+        if roles.is_ambiguous:
+            result.action_summary = f"SUPPRESSED: {roles.ambiguity_reason}"
+            result.priority_level = "AMBIGUOUS"
+            self.reset_baselines()
+            return result
 
-        # Default fallback if hand pose is unrecognized
-        return {
-            "gesture": "UNKNOWN GESTURE",
-            "status": current_status,
-            "palm_hold_progress": 0.0,
-            "volume_pct": None,
-            "pinch_distance": pinch_dist,
-            "fingers": fingers,
-        }
+        # Hand disappearance baseline resets
+        if roles.right_just_lost:
+            self.right_pinch_was_active = False
+        if roles.left_just_lost:
+            self.last_scroll_y = None
+            self.left_palm_start_time = None
+            self.left_swipe_history.clear()
+
+        # ----------------------------------------------------------------------
+        # Priority 3: Two-Hand Screen Zoom (Takes priority over click & volume)
+        # ----------------------------------------------------------------------
+        # Zoom occurs when BOTH hands are visible and BOTH are in a pinch pose
+        if roles.right_hand is not None and roles.left_hand is not None and mode != "PRESENTATION":
+            r_dist = euclidean_distance(roles.right_hand.landmarks[4], roles.right_hand.landmarks[8])
+            l_dist = euclidean_distance(roles.left_hand.landmarks[4], roles.left_hand.landmarks[8])
+
+            if r_dist < config.PINCH_THRESHOLD * 1.3 and l_dist < config.PINCH_THRESHOLD * 1.3:
+                # Both hands are in zoom-ready pinch pose
+                pinch_center_r = roles.right_hand.landmarks[8]
+                pinch_center_l = roles.left_hand.landmarks[8]
+                current_zoom_dist = euclidean_distance(pinch_center_r, pinch_center_l)
+
+                if not self.is_zooming:
+                    if self.zoom_entry_start_time is None:
+                        self.zoom_entry_start_time = current_time
+                    elif (current_time - self.zoom_entry_start_time) >= 0.25:
+                        # Enter zoom mode and capture baseline distance
+                        self.is_zooming = True
+                        self.zoom_baseline_distance = current_zoom_dist
+
+                if self.is_zooming:
+                    # Actively zooming
+                    zoom_delta = current_zoom_dist - (self.zoom_baseline_distance or current_zoom_dist)
+                    zoom_action = "ZOOM IN" if zoom_delta > 0.03 else ("ZOOM OUT" if zoom_delta < -0.03 else "ZOOM HOLD")
+
+                    result.is_zoom_active = True
+                    result.zoom_distance = current_zoom_dist
+                    result.zoom_delta = zoom_delta
+                    result.action_summary = f"TWO-HAND {zoom_action}"
+                    result.priority_level = "ZOOM"
+
+                    # Populate display poses
+                    result.right = HandPose(name="PINCH (ZOOM)", action="ZOOM IN/OUT", pinch_distance=r_dist)
+                    result.left = HandPose(name="PINCH (ZOOM)", action="ZOOM IN/OUT", pinch_distance=l_dist)
+                    return result
+            else:
+                self.zoom_entry_start_time = None
+                self.is_zooming = False
+                self.zoom_baseline_distance = None
+        else:
+            self.zoom_entry_start_time = None
+            self.is_zooming = False
+            self.zoom_baseline_distance = None
+
+        # ----------------------------------------------------------------------
+        # Priority 4 & 5: Individual Hand Gestures (Right: Cursor/Click, Left: Scroll/Vol/Media/Swipe)
+        # ----------------------------------------------------------------------
+        active_actions: List[str] = []
+
+        if roles.right_hand is not None:
+            result.right = self._classify_right_hand(roles.right_hand, current_time)
+            if result.right.action != "NONE":
+                active_actions.append(f"Right: {result.right.action}")
+
+        if roles.left_hand is not None:
+            result.left = self._classify_left_hand(roles.left_hand, current_time, mode=mode)
+            if result.left.action != "NONE":
+                active_actions.append(f"Left: {result.left.action}")
+
+        if active_actions:
+            result.action_summary = " | ".join(active_actions)
+            result.priority_level = "CONTINUOUS"
+        else:
+            result.action_summary = "IDLE (WAITING FOR GESTURE)"
+            result.priority_level = "IDLE"
+
+        return result
+
+    def reset_baselines(self) -> None:
+        """Resets all active tracking baselines and timers."""
+        self.last_scroll_y = None
+        self.left_palm_start_time = None
+        self.left_swipe_history.clear()
+        self.right_pinch_was_active = False
+        self.zoom_entry_start_time = None
+        self.is_zooming = False
+        self.zoom_baseline_distance = None

@@ -1,11 +1,12 @@
 """
 AirControl - Control Your Laptop With Hand Gestures
 Version: V2
-Stage 1: Two-Hand Tracking & Physical Role Calibration
+Stage 2: Two-Hand Gesture Recognition Engine & Action Indicators
 
-Main application entry point orchestrating two-hand detection,
-handedness assignment, role stability, HUD overlays, and clean shutdown.
-NO OS automation (mouse/keyboard control) is executed in this stage.
+Main application entry point orchestrating two-hand tracking, physical role
+calibration, gesture classification, live action HUD indicators, and clean shutdown.
+NO real OS automation (mouse movement / keyboard events) is executed in Stage 2.
+Actions are displayed and logged in real time.
 """
 
 import os
@@ -20,7 +21,6 @@ os.environ["ABSL_LOG_PREFIX"] = "0"
 import time
 from typing import Optional
 
-# Ensure project root is always in sys.path and is the active working directory
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
@@ -33,6 +33,7 @@ try:
     import config
     from src.hand_tracker import HandTracker
     from src.hand_roles import HandRoleManager
+    from src.gestures import TwoHandGestureRecognizer
     from src.overlay import CameraOverlay, COLOR_RIGHT_HAND, COLOR_LEFT_HAND
 except ImportError as err:
     print(f"[AirControl Startup Error] Failed to import application modules: {err}")
@@ -63,11 +64,11 @@ def open_webcam(camera_index: int, width: int, height: int) -> Optional[cv2.Vide
 
 
 def main() -> None:
-    """Main application loop for AirControl V2 Stage 1 (Two-Hand Tracking)."""
-    print("=" * 64)
-    print("  AirControl V2 — Two-Hand Gesture Control (Stage 1: Tracking)")
-    print("  Tracking 2 Hands | Physical Role Calibration | 100% Offline")
-    print("=" * 64)
+    """Main application loop for AirControl V2 Stage 2 (Two-Hand Gesture Recognition)."""
+    print("=" * 66)
+    print("  AirControl V2 — Two-Hand Gesture Recognition (Stage 2)")
+    print("  Live Gesture HUD & Action Indicators | 100% Offline")
+    print("=" * 66)
 
     # 1. Connect Webcam
     print(f"\n[1/3] Connecting to webcam (Device Index {config.CAMERA_INDEX})...")
@@ -85,22 +86,23 @@ def main() -> None:
 
     print("[✓] Webcam connected successfully.")
 
-    # 2. Initialize Two-Hand Tracking & Role Engine
-    print("\n[2/3] Initializing MediaPipe two-hand tracking and role manager...")
+    # 2. Initialize Tracking, Role Manager, and Gesture Engine
+    print("\n[2/3] Initializing two-hand tracking and gesture recognition engine...")
     try:
         tracker = HandTracker(max_num_hands=config.MAX_NUM_HANDS)
         role_manager = HandRoleManager()
+        recognizer = TwoHandGestureRecognizer()
         overlay = CameraOverlay()
     except Exception as err:
         print(f"\n[ERROR] Engine initialization failed: {err}")
         cap.release()
         sys.exit(1)
 
-    print("[✓] Two-hand tracking engine and role stability manager ready.")
+    print("[✓] Two-hand tracking and gesture recognition engine ready.")
 
     # 3. Create Display Window
-    print("\n[3/3] Opening camera preview window...")
-    window_name = "AirControl V2 - Two-Hand Tracking Preview"
+    print("\n[3/3] Opening camera preview window with live action indicators...")
+    window_name = "AirControl V2 - Live Gesture & Action Preview"
     cv2.namedWindow(window_name, cv2.WINDOW_AUTOSIZE)
 
     prev_time = time.perf_counter()
@@ -109,15 +111,16 @@ def main() -> None:
     is_paused = False
     first_frame = True
 
-    print("\n" + "=" * 64)
-    print("  AIRCONTROL V2 STAGE 1 IS ACTIVE AND RUNNING!")
-    print("  • Present ONE or BOTH hands in front of the webcam.")
-    print("  • Cyan skeleton = Physical RIGHT Hand.")
-    print("  • Amber skeleton = Physical LEFT Hand.")
+    print("\n" + "=" * 66)
+    print("  AIRCONTROL V2 STAGE 2 IS ACTIVE AND RUNNING!")
+    print("  • Look at the GESTURE CHEATSHEET on the top-right of the screen.")
+    print("  • Present your RIGHT HAND: Index Up (Cursor) or Pinch (Left Click).")
+    print("  • Present your LEFT HAND: Peace Sign (Scroll) or 3 Fingers (Volume).")
+    print("  • Present BOTH HANDS: Pinch together for Two-Hand Screen Zoom.")
     print("  • Press 'F8' or Space to toggle PAUSE / RESUME.")
     print("  • Press 'M' to cycle Modes (Desktop / Media / Presentation).")
     print("  • Press 'Q' while focused on the preview window to exit.")
-    print("=" * 64 + "\n")
+    print("=" * 66 + "\n")
 
     try:
         while True:
@@ -141,6 +144,14 @@ def main() -> None:
             # Assign and stabilize physical LEFT and RIGHT roles
             role_result = role_manager.update(raw_hands)
 
+            # Classify gestures and arbitrate action priorities
+            gesture_result = recognizer.process(
+                roles=role_result,
+                is_paused=is_paused,
+                mode=current_mode,
+                current_time=curr_time,
+            )
+
             # Draw distinct color skeletons for each assigned hand
             if role_result.right_hand is not None:
                 tracker.draw_landmarks_for_hand(
@@ -162,10 +173,11 @@ def main() -> None:
                 instant_fps = 1.0 / delta
                 fps = (0.9 * fps) + (0.1 * instant_fps) if fps > 0.0 else instant_fps
 
-            # Render complete graphical HUD overlay
+            # Render complete graphical HUD overlay with live action indicators
             overlay.render(
                 frame=frame,
                 roles=role_result,
+                gestures=gesture_result,
                 fps=fps,
                 is_paused=is_paused,
                 mode=current_mode,
@@ -190,12 +202,10 @@ def main() -> None:
                 print("\n[AirControl] 'Q' pressed. Exiting cleanly...")
                 break
             elif key in (ord('m'), ord('M')):
-                # Cycle modes: DESKTOP -> MEDIA -> PRESENTATION -> DESKTOP
                 mode_cycle = {"DESKTOP": "MEDIA", "MEDIA": "PRESENTATION", "PRESENTATION": "DESKTOP"}
                 current_mode = mode_cycle.get(current_mode, "DESKTOP")
                 print(f"[AirControl] Switched mode to: {current_mode}")
             elif key in (ord(' '), ord('p'), ord('P')):
-                # Safety pause/resume toggle via keyboard
                 is_paused = not is_paused
                 status_str = "PAUSED" if is_paused else "RESUMED"
                 print(f"[AirControl Safety] Application {status_str}")
