@@ -22,20 +22,30 @@ FLIP_CAMERA: bool = True
 # Target frame rate estimation / display
 TARGET_FPS: int = 30
 
+# Default active mode on startup ("DESKTOP", "MEDIA", or "PRESENTATION")
+DEFAULT_MODE: str = "DESKTOP"
+
+# Fast downscaled resolution for real-time MediaPipe inference (balances 25+ FPS & accuracy)
+INFERENCE_WIDTH: int = 360
+INFERENCE_HEIGHT: int = 270
+
 # ==============================================================================
 # MediaPipe Hand Tracking Settings (AirControl V2 Two-Hand Tracking)
 # ==============================================================================
+# Model complexity: 0 = Lite (fastest, 25+ FPS), 1 = Full (default)
+MODEL_COMPLEXITY: int = 0
+
 # Minimum confidence value ([0.0, 1.0]) for hand detection to be considered successful.
-MEDIAPIPE_DETECTION_CONFIDENCE: float = 0.65
+MEDIAPIPE_DETECTION_CONFIDENCE: float = 0.60
 
 # Minimum confidence value ([0.0, 1.0]) for hand landmarks to be tracked successfully.
-MEDIAPIPE_TRACKING_CONFIDENCE: float = 0.65
+MEDIAPIPE_TRACKING_CONFIDENCE: float = 0.60
 
 # Maximum number of hands to detect. AirControl V2 processes up to TWO hands simultaneously.
 MAX_NUM_HANDS: int = 2
 
 # Minimum confidence threshold for MediaPipe handedness classification
-ROLE_CONFIDENCE_THRESHOLD: float = 0.60
+ROLE_CONFIDENCE_THRESHOLD: float = 0.55
 
 # Number of frames a hand can be momentarily lost (e.g. fast motion) before resetting state
 HAND_OCCLUSION_MAX_FRAMES: int = 5

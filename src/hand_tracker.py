@@ -33,8 +33,9 @@ class HandTracker:
         max_num_hands: int = config.MAX_NUM_HANDS,
         min_detection_confidence: float = config.MEDIAPIPE_DETECTION_CONFIDENCE,
         min_tracking_confidence: float = config.MEDIAPIPE_TRACKING_CONFIDENCE,
+        model_complexity: int = config.MODEL_COMPLEXITY,
     ) -> None:
-        """Initialize the MediaPipe Hands solution for up to 2 hands."""
+        """Initialize the MediaPipe Hands solution for up to 2 hands with optimized model complexity."""
         self.mp_hands = mp.solutions.hands
         self.mp_drawing = mp.solutions.drawing_utils
         self.mp_drawing_styles = mp.solutions.drawing_styles
@@ -42,6 +43,7 @@ class HandTracker:
         self.hands = self.mp_hands.Hands(
             static_image_mode=False,
             max_num_hands=max_num_hands,
+            model_complexity=model_complexity,
             min_detection_confidence=min_detection_confidence,
             min_tracking_confidence=min_tracking_confidence,
         )
@@ -50,6 +52,7 @@ class HandTracker:
     def process_frame(self, frame_bgr: Any) -> List[RawHandData]:
         """
         Processes a BGR image frame to locate up to two hands.
+        Uses fast downscaled inference for 25+ FPS while preserving normalized coordinates.
 
         Args:
             frame_bgr: OpenCV image frame in BGR color space.
@@ -57,7 +60,9 @@ class HandTracker:
         Returns:
             A list of RawHandData instances (0, 1, or 2 hands).
         """
-        frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        # Downscale for high-speed real-time inference (normalized coordinates remain identical)
+        inf_frame = cv2.resize(frame_bgr, (config.INFERENCE_WIDTH, config.INFERENCE_HEIGHT), interpolation=cv2.INTER_LINEAR)
+        frame_rgb = cv2.cvtColor(inf_frame, cv2.COLOR_BGR2RGB)
         frame_rgb.flags.writeable = False
         self.last_results = self.hands.process(frame_rgb)
         frame_rgb.flags.writeable = True

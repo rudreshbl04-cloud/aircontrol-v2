@@ -107,7 +107,7 @@ def main() -> None:
 
     prev_time = time.perf_counter()
     fps = 0.0
-    current_mode = "DESKTOP"
+    current_mode = config.DEFAULT_MODE
     is_paused = False
     first_frame = True
 
