@@ -1,12 +1,16 @@
 """
 AirControl - Control Your Laptop With Hand Gestures
-Version: V2
-Stage 2: Two-Hand Gesture Recognition Engine & Action Indicators
+Version: V2 (Complete Production Release)
 
-Main application entry point orchestrating two-hand tracking, physical role
-calibration, gesture classification, live action HUD indicators, and clean shutdown.
-NO real OS automation (mouse movement / keyboard events) is executed in Stage 2.
-Actions are displayed and logged in real time.
+Main application entry point orchestrating:
+- Real-time two-hand tracking (MediaPipe Hands)
+- Physical Left/Right hand calibration & occlusion continuity
+- Gesture recognition & action priority arbitration
+- Full desktop automation (Mouse Cursor, Click, Scroll, Volume, Zoom, Media, Presentation)
+- Live HUD overlay with reticles, gesture cheatsheet, and status indicators
+- In-memory settings loading and persistent configuration GUI (Settings 'S')
+- FailSafe protection & safety auto-pause
+- 100% Offline execution
 """
 
 import os
@@ -20,6 +24,7 @@ os.environ["ABSL_LOG_PREFIX"] = "0"
 
 import time
 from typing import Optional
+import pyautogui
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 if PROJECT_ROOT not in sys.path:
@@ -35,6 +40,8 @@ try:
     from src.hand_roles import HandRoleManager
     from src.gestures import TwoHandGestureRecognizer
     from src.overlay import CameraOverlay, COLOR_RIGHT_HAND, COLOR_LEFT_HAND
+    from src.controller import DesktopController
+    from src.settings_ui import load_settings, launch_settings_gui
 except ImportError as err:
     print(f"[AirControl Startup Error] Failed to import application modules: {err}")
     print("Please run with:")
@@ -64,10 +71,13 @@ def open_webcam(camera_index: int, width: int, height: int) -> Optional[cv2.Vide
 
 
 def main() -> None:
-    """Main application loop for AirControl V2 Stage 2 (Two-Hand Gesture Recognition)."""
+    """Main application loop for AirControl V2 (Two-Hand Gesture Control)."""
+    # 0. Load any persistent user preferences
+    load_settings()
+
     print("=" * 66)
-    print("  AirControl V2 — Two-Hand Gesture Recognition (Stage 2)")
-    print("  Live Gesture HUD & Action Indicators | 100% Offline")
+    print("  AirControl V2 — Two-Hand Gesture Control (Full Working Model)")
+    print("  Complete Laptop Automation | Live Action HUD | 100% Offline")
     print("=" * 66)
 
     # 1. Connect Webcam
@@ -86,40 +96,43 @@ def main() -> None:
 
     print("[✓] Webcam connected successfully.")
 
-    # 2. Initialize Tracking, Role Manager, and Gesture Engine
-    print("\n[2/3] Initializing two-hand tracking and gesture recognition engine...")
+    # 2. Initialize Tracking, Roles, Gestures, and Desktop Controller
+    print("\n[2/3] Initializing two-hand tracking, gestures, and automation controller...")
     try:
         tracker = HandTracker(max_num_hands=config.MAX_NUM_HANDS)
         role_manager = HandRoleManager()
         recognizer = TwoHandGestureRecognizer()
         overlay = CameraOverlay()
+        controller = DesktopController()
     except Exception as err:
         print(f"\n[ERROR] Engine initialization failed: {err}")
         cap.release()
         sys.exit(1)
 
-    print("[✓] Two-hand tracking and gesture recognition engine ready.")
+    print("[✓] Two-hand tracking, gesture engine, and OS controller ready.")
 
     # 3. Create Display Window
     print("\n[3/3] Opening camera preview window with live action indicators...")
-    window_name = "AirControl V2 - Live Gesture & Action Preview"
+    window_name = "AirControl V2 - Gesture Control"
     cv2.namedWindow(window_name, cv2.WINDOW_AUTOSIZE)
 
     prev_time = time.perf_counter()
     fps = 0.0
     current_mode = config.DEFAULT_MODE
     is_paused = False
+    failsafe_triggered = False
     first_frame = True
 
     print("\n" + "=" * 66)
-    print("  AIRCONTROL V2 STAGE 2 IS ACTIVE AND RUNNING!")
+    print("  AIRCONTROL V2 IS ACTIVE AND READY TO CONTROL YOUR LAPTOP!")
     print("  • Look at the GESTURE CHEATSHEET on the top-right of the screen.")
-    print("  • Present your RIGHT HAND: Index Up (Cursor) or Pinch (Left Click).")
-    print("  • Present your LEFT HAND: Peace Sign (Scroll) or 3 Fingers (Volume).")
-    print("  • Present BOTH HANDS: Pinch together for Two-Hand Screen Zoom.")
-    print("  • Press 'F8' or Space to toggle PAUSE / RESUME.")
+    print("  • RIGHT HAND: Index Up (Move Mouse) | Thumb-Index Pinch (Click).")
+    print("  • LEFT HAND: Peace Sign (Scroll Up/Down) | 3 Fingers (System Volume).")
+    print("  • BOTH HANDS: Pinch Both Hands (Screen Zoom In/Out).")
+    print("  • Press 'Space' to toggle PAUSE / RESUME.")
     print("  • Press 'M' to cycle Modes (Desktop / Media / Presentation).")
-    print("  • Press 'Q' while focused on the preview window to exit.")
+    print("  • Press 'S' to open Settings & Sensitivity GUI.")
+    print("  • Press 'Q' to exit.")
     print("=" * 66 + "\n")
 
     try:
@@ -166,6 +179,25 @@ def main() -> None:
                     color_bgr=COLOR_LEFT_HAND,
                 )
 
+            # ------------------------------------------------------------------
+            # Execute Desktop Automation (Mouse, Click, Scroll, Volume, Zoom)
+            # ------------------------------------------------------------------
+            if not is_paused:
+                try:
+                    controller.execute(
+                        gestures=gesture_result,
+                        roles=role_result,
+                        current_time=curr_time,
+                    )
+                except pyautogui.FailSafeException:
+                    is_paused = True
+                    failsafe_triggered = True
+                    controller.reset_cursor_baseline()
+                    print("\n[AirControl Safety] FailSafe triggered (cursor reached screen corner).")
+                    print("Automation auto-paused for safety. Press Space to resume.")
+            else:
+                controller.reset_cursor_baseline()
+
             # Calculate smoothed FPS
             delta = curr_time - prev_time
             prev_time = curr_time
@@ -182,6 +214,7 @@ def main() -> None:
                 is_paused=is_paused,
                 mode=current_mode,
                 is_low_light=is_low_light,
+                failsafe_triggered=failsafe_triggered,
             )
 
             # Display preview frame
@@ -207,8 +240,24 @@ def main() -> None:
                 print(f"[AirControl] Switched mode to: {current_mode}")
             elif key in (ord(' '), ord('p'), ord('P')):
                 is_paused = not is_paused
+                failsafe_triggered = False
                 status_str = "PAUSED" if is_paused else "RESUMED"
                 print(f"[AirControl Safety] Application {status_str}")
+            elif key in (ord('s'), ord('S')):
+                print("\n[AirControl] Opening Settings & Preferences dialog...")
+                prev_pause = is_paused
+                is_paused = True
+                try:
+                    launch_settings_gui()
+                    # Re-apply updated parameters
+                    current_mode = config.DEFAULT_MODE
+                    print("[AirControl] Settings updated successfully.")
+                except Exception as err:
+                    print(f"[AirControl] Notice launching settings: {err}")
+                is_paused = prev_pause
+            elif key in (ord('r'), ord('R')):
+                controller.reset_cursor_baseline()
+                print("[AirControl] Cursor baseline reset.")
 
     except KeyboardInterrupt:
         print("\n[AirControl] KeyboardInterrupt received. Exiting...")

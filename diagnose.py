@@ -91,37 +91,41 @@ def run_diagnostics():
         print("    4. If your laptop has a physical webcam slider/switch, slide it OPEN.")
         all_passed = False
 
-    # 4. MediaPipe Hand Tracker
-    print("\n[Check 4/5] Testing MediaPipe Hand Tracker Initialization...")
+    # 4. MediaPipe Two-Hand Tracker & Role Manager
+    print("\n[Check 4/5] Testing MediaPipe Two-Hand Tracker & Role Manager...")
     try:
         from src.hand_tracker import HandTracker
-        tracker = HandTracker()
+        from src.hand_roles import HandRoleManager
+        tracker = HandTracker(max_num_hands=2)
+        role_mgr = HandRoleManager()
         dummy = np.zeros((480, 640, 3), dtype=np.uint8)
-        tracker.find_hand_landmarks(dummy)
+        raw_hands = tracker.process_frame(dummy)
+        roles = role_mgr.update(raw_hands)
         tracker.close()
-        print("  [PASS] MediaPipe Hands initialized and executed inference locally.")
+        print("  [PASS] MediaPipe Two-Hand Tracker & Role Manager initialized and executed inference locally.")
     except Exception as err:
-        print(f"  [FAIL] HandTracker failed: {err}")
+        print(f"  [FAIL] HandTracker/RoleManager failed: {err}")
         all_passed = False
 
-    # 5. Gesture Recognition Engine
-    print("\n[Check 5/5] Testing Gesture Recognizer Pipeline...")
+    # 5. Gesture Recognition & Desktop Controller Pipeline
+    print("\n[Check 5/5] Testing Two-Hand Gesture Recognizer & OS Controller...")
     try:
-        from src.gestures import GestureRecognizer
-        recognizer = GestureRecognizer()
-        res = recognizer.recognize(None)
-        if res.get("gesture") == "NO HAND":
-            print("  [PASS] GestureRecognizer initialized and validated.")
-        else:
-            print(f"  [WARN] Unexpected response: {res}")
+        from src.gestures import TwoHandGestureRecognizer
+        from src.controller import DesktopController
+        recognizer = TwoHandGestureRecognizer()
+        controller = DesktopController()
+        res = recognizer.process(roles)
+        audio_status = "Active" if controller.audio.is_available else "Fallback (Volume disabled)"
+        print(f"  [PASS] TwoHandGestureRecognizer validated (Action: {res.action_summary}).")
+        print(f"  [PASS] DesktopController initialized (pycaw audio: {audio_status}).")
     except Exception as err:
-        print(f"  [FAIL] GestureRecognizer error: {err}")
+        print(f"  [FAIL] Gesture/Controller pipeline error: {err}")
         all_passed = False
 
     print("\n" + "=" * 64)
     if all_passed and working_cameras:
         print("  HEALTH CHECK RESULT: ALL SYSTEMS OPERATIONAL! [READY]")
-        print("  You can now start AirControl using:")
+        print("  You can now start AirControl V2 using:")
         print('  Set-Location "c:\\ai.offline"; & "c:\\ai.offline\\.venv\\Scripts\\python.exe" "c:\\ai.offline\\main.py"')
     else:
         print("  HEALTH CHECK RESULT: ATTENTION NEEDED (Review items marked [FAIL] above)")

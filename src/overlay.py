@@ -249,6 +249,101 @@ class CameraOverlay:
             cv2.LINE_AA,
         )
 
+    def render(
+        self,
+        frame: np.ndarray,
+        roles: RoleFrameResult,
+        gestures: TwoHandGestureResult,
+        fps: float,
+        is_paused: bool,
+        mode: str,
+        is_low_light: bool = False,
+        failsafe_triggered: bool = False,
+    ) -> None:
+        """Renders complete graphical HUD overlay over preview frame."""
+        h, w, _ = frame.shape
+
+        # 0. Draw subtle active cursor navigation region
+        self.draw_active_region(frame)
+
+        # 1. Fingertip Reticles & Motion Indicators
+        if roles.right_hand is not None and len(roles.right_hand.landmarks) > 8:
+            tip = roles.right_hand.landmarks[8]
+            cx, cy = int(tip[0] * w), int(tip[1] * h)
+            if gestures.right and gestures.right.name == "INDEX UP":
+                # Precision cursor crosshair
+                cv2.circle(frame, (cx, cy), 12, COLOR_RIGHT_HAND, 2, cv2.LINE_AA)
+                cv2.drawMarker(frame, (cx, cy), COLOR_RIGHT_HAND, cv2.MARKER_CROSS, 16, 1, cv2.LINE_AA)
+            elif gestures.right and gestures.right.name == "PINCH":
+                # Filled circle on click
+                cv2.circle(frame, (cx, cy), 14, (0, 255, 255), -1, cv2.LINE_AA)
+                cv2.circle(frame, (cx, cy), 16, (255, 255, 255), 2, cv2.LINE_AA)
+
+        if roles.left_hand is not None and len(roles.left_hand.landmarks) > 8:
+            tip = roles.left_hand.landmarks[8]
+            cx, cy = int(tip[0] * w), int(tip[1] * h)
+            if gestures.left and gestures.left.name == "INDEX + MIDDLE (PEACE)":
+                # Scroll indicator
+                cv2.circle(frame, (cx, cy), 12, COLOR_LEFT_HAND, 2, cv2.LINE_AA)
+                arrow_dir = -8 if gestures.left.scroll_dy > 0 else (8 if gestures.left.scroll_dy < 0 else 0)
+                if arrow_dir != 0:
+                    cv2.arrowedLine(frame, (cx, cy), (cx, cy + arrow_dir), COLOR_LEFT_HAND, 2, tipLength=0.4)
+
+        # 2. Main Title and Status Bar
+        header_w = 380
+        cv2.rectangle(frame, (10, 10), (10 + header_w, 85), (24, 24, 24), -1)
+        cv2.rectangle(frame, (10, 10), (10 + header_w, 85), (60, 60, 60), 1)
+
+        cv2.putText(
+            frame,
+            "AirControl V2 - Two-Hand Control",
+            (20, 32),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.52,
+            (255, 255, 255),
+            1,
+            cv2.LINE_AA,
+        )
+
+        # Status Badge (ON / PAUSED)
+        badge_text = "PAUSED" if is_paused else "ACTIVE"
+        badge_color = COLOR_PAUSED if is_paused else COLOR_ACTIVE_GREEN
+        cv2.rectangle(frame, (20, 44), (95, 66), badge_color, -1)
+        cv2.putText(
+            frame,
+            badge_text,
+            (26, 60),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.42,
+            (0, 0, 0),
+            1,
+            cv2.LINE_AA,
+        )
+
+        # Mode Badge
+        cv2.putText(
+            frame,
+            f"Mode: {mode}",
+            (108, 60),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.42,
+            (220, 220, 220),
+            1,
+            cv2.LINE_AA,
+        )
+
+        # Live FPS
+        cv2.putText(
+            frame,
+            f"FPS: {fps:.1f}",
+            (285, 60),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.42,
+            (0, 255, 200),
+            1,
+            cv2.LINE_AA,
+        )
+
         # 3. Dedicated Hand Cards (Left & Right)
         card_y = 95
         # Left Hand card (Amber/Orange)
@@ -309,7 +404,23 @@ class CameraOverlay:
                 cv2.LINE_AA,
             )
 
-        # 7. Low-Light Warning (Bottom Left)
+        # 7. FailSafe Alert Banner
+        if failsafe_triggered:
+            fs_y = h - 85
+            cv2.rectangle(frame, (10, fs_y), (w - 10, fs_y + 32), (0, 0, 180), -1)
+            cv2.rectangle(frame, (10, fs_y), (w - 10, fs_y + 32), (0, 0, 255), 2)
+            cv2.putText(
+                frame,
+                "SAFETY PAUSE: Mouse reached screen corner. Press Space to resume.",
+                (20, fs_y + 21),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.45,
+                (255, 255, 255),
+                1,
+                cv2.LINE_AA,
+            )
+
+        # 8. Low-Light Warning (Bottom Left)
         if is_low_light:
             cv2.rectangle(frame, (10, h - 55), (320, h - 25), (0, 0, 140), -1)
             cv2.putText(
@@ -323,13 +434,13 @@ class CameraOverlay:
                 cv2.LINE_AA,
             )
 
-        # 8. Bottom Navigation Hints
+        # 9. Bottom Navigation Hints
         cv2.putText(
             frame,
-            "Keys: F8 / Space = Pause/Resume | M = Mode | Q = Quit",
+            "Keys: Space = Pause/Resume | M = Mode | S = Settings | Q = Quit",
             (10, h - 10),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.42,
+            0.40,
             (160, 160, 160),
             1,
             cv2.LINE_AA,
