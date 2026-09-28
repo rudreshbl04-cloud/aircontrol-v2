@@ -102,7 +102,7 @@ class HandTracker:
 
     def draw_landmarks_for_hand(
         self,
-        frame_bgr: Any,
+        frame: Any,
         hand_idx: int,
         color_bgr: Tuple[int, int, int] = (0, 255, 0),
     ) -> None:
@@ -123,7 +123,7 @@ class HandTracker:
         connection_spec = self.mp_drawing.DrawingSpec(color=color_bgr, thickness=2)
 
         self.mp_drawing.draw_landmarks(
-            frame_bgr,
+            frame,
             hand_landmarks,
             self.mp_hands.HAND_CONNECTIONS,
             landmark_spec,
