@@ -35,19 +35,48 @@ class HandTracker:
         min_tracking_confidence: float = config.MEDIAPIPE_TRACKING_CONFIDENCE,
         model_complexity: int = config.MODEL_COMPLEXITY,
     ) -> None:
-        """Initialize the MediaPipe Hands solution for up to 2 hands with optimized model complexity."""
+        self.max_num_hands = max_num_hands
+        self.min_detection_confidence = min_detection_confidence
+        self.min_tracking_confidence = min_tracking_confidence
+        self.model_complexity = model_complexity
+
         self.mp_hands = mp.solutions.hands
         self.mp_drawing = mp.solutions.drawing_utils
         self.mp_drawing_styles = mp.solutions.drawing_styles
 
         self.hands = self.mp_hands.Hands(
             static_image_mode=False,
-            max_num_hands=max_num_hands,
-            model_complexity=model_complexity,
-            min_detection_confidence=min_detection_confidence,
-            min_tracking_confidence=min_tracking_confidence,
+            max_num_hands=self.max_num_hands,
+            model_complexity=self.model_complexity,
+            min_detection_confidence=self.min_detection_confidence,
+            min_tracking_confidence=self.min_tracking_confidence,
         )
         self.last_results: Optional[Any] = None
+
+    def set_model_complexity(self, complexity: int) -> None:
+        """
+        Dynamically switches model complexity (0 = Lite/Fast, 1 = Full/High Precision)
+        and re-trains/re-initializes MediaPipe pipeline cleanly.
+        """
+        if complexity not in (0, 1) or complexity == self.model_complexity:
+            return
+        self.model_complexity = complexity
+        config.MODEL_COMPLEXITY = complexity
+        if hasattr(self, "hands") and self.hands is not None:
+            self.hands.close()
+        self.hands = self.mp_hands.Hands(
+            static_image_mode=False,
+            max_num_hands=self.max_num_hands,
+            model_complexity=self.model_complexity,
+            min_detection_confidence=self.min_detection_confidence,
+            min_tracking_confidence=self.min_tracking_confidence,
+        )
+
+    def toggle_model_complexity(self) -> int:
+        """Toggles between Lite (0) and Full (1) model complexity."""
+        new_complexity = 0 if self.model_complexity == 1 else 1
+        self.set_model_complexity(new_complexity)
+        return self.model_complexity
 
     def process_frame(self, frame_bgr: Any) -> List[RawHandData]:
         """

@@ -66,6 +66,9 @@ class TestSettingsManagement(unittest.TestCase):
             "SCROLL_AMOUNT": 45,
             "DEFAULT_MODE": "MEDIA",
             "FLIP_CAMERA": False,
+            "MODEL_COMPLEXITY": 0,
+            "DRAG_ENABLED": True,
+            "RIGHT_CLICK_ENABLED": True,
         }
         success = settings_ui.save_settings(custom_data)
         self.assertTrue(success)
@@ -75,12 +78,18 @@ class TestSettingsManagement(unittest.TestCase):
         self.assertEqual(loaded["SCROLL_AMOUNT"], 45)
         self.assertEqual(loaded["DEFAULT_MODE"], "MEDIA")
         self.assertEqual(loaded["FLIP_CAMERA"], False)
+        self.assertEqual(loaded["MODEL_COMPLEXITY"], 0)
+        self.assertTrue(loaded["DRAG_ENABLED"])
+        self.assertTrue(loaded["RIGHT_CLICK_ENABLED"])
 
         # Also verify live config module updated
         self.assertAlmostEqual(config.SMOOTHING_FACTOR, 0.42)
         self.assertEqual(config.SCROLL_AMOUNT, 45)
         self.assertEqual(config.DEFAULT_MODE, "MEDIA")
         self.assertFalse(config.FLIP_CAMERA)
+        self.assertEqual(config.MODEL_COMPLEXITY, 0)
+        self.assertTrue(config.DRAG_ENABLED)
+        self.assertTrue(config.RIGHT_CLICK_ENABLED)
 
     def test_corrupted_json_handled_gracefully(self):
         """Verify invalid/corrupted JSON file falls back to defaults without crashing."""

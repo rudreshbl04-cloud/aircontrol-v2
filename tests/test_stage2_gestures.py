@@ -181,6 +181,22 @@ class TestTwoHandGestures(unittest.TestCase):
         self.assertIn("PAUSED", res.action_summary)
         self.assertIsNone(res.right)
 
+    def test_right_click_recognition(self):
+        """Verify Right Hand middle-finger + thumb pinch triggers RIGHT CLICK."""
+        lm = make_mock_landmarks(hand_x=0.7, thumb_up=True, index_up=True, middle_up=True)
+        # Pinch thumb (4) to middle finger tip (12)
+        lm[4] = (lm[12][0] + 0.01, lm[12][1] + 0.01, 0.0)
+        # Keep index finger tip (8) further away so it's not an index pinch
+        lm[8] = (lm[8][0], lm[8][1] - 0.08, 0.0)
+
+        hand = AssignedHand(role="RIGHT", landmarks=lm, confidence=0.9, center=(0.7, 0.5), raw_label="Right", raw_index=0)
+        roles = RoleFrameResult(right_hand=hand, hands_detected_count=1)
+
+        res = self.rec.process(roles, current_time=25.0)
+        self.assertIsNotNone(res.right)
+        self.assertEqual(res.right.name, "RIGHT PINCH")
+        self.assertEqual(res.right.action, "RIGHT CLICK")
+
 
 if __name__ == "__main__":
     unittest.main()

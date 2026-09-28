@@ -22,7 +22,7 @@ from src.gestures import TwoHandGestureResult, HandPose
 
 # Always ensure PyAutoGUI failsafe is enabled
 pyautogui.FAILSAFE = True
-pyautogui.PAUSE = 0.001  # Minimize per-call internal pause for low latency
+pyautogui.PAUSE = 0.0  # Zero internal pause for instant, zero-latency OS automation
 
 
 class AudioController:
@@ -99,14 +99,23 @@ class DesktopController:
         # Cursor smoothing state
         self.cursor_x: float = float(self.screen_width // 2)
         self.cursor_y: float = float(self.screen_height // 2)
+        self.prev_target_x: float = float(self.screen_width // 2)
+        self.prev_target_y: float = float(self.screen_height // 2)
         self.has_cursor_baseline: bool = False
+        self.baseline_grace_frames: int = 0
+        self.max_grace_frames: int = 6  # ~0.2s grace hold before dropping baseline
 
         # Jitter dead zone threshold in screen pixels
         self.jitter_dead_zone: float = 3.5
 
+        # Drag & drop state
+        self.is_dragging: bool = False
+        self.drag_start_time: float = 0.0
+
         # Click state
         self.click_ready: bool = True
         self.last_click_time: float = 0.0
+        self.last_right_click_time: float = 0.0
 
         # Scroll rate limiting
         self.last_scroll_time: float = 0.0
@@ -124,7 +133,7 @@ class DesktopController:
     def update_cursor(self, fingertip_x: float, fingertip_y: float) -> Optional[Tuple[int, int]]:
         """
         Maps normalized index fingertip coordinates to full screen bounds
-        using the active camera region, clamping, speed-adaptive smoothing, and dead zone.
+        using active camera region, precision dead-zone filtering, and continuous velocity smoothing.
         """
         # 1. Normalize position inside configured active region
         x_min, x_max = config.ACTIVE_AREA_LEFT, config.ACTIVE_AREA_RIGHT
@@ -141,9 +150,13 @@ class DesktopController:
         target_x = clamped_x * self.screen_width
         target_y = clamped_y * self.screen_height
 
+        self.baseline_grace_frames = 0
+
         if not self.has_cursor_baseline:
             self.cursor_x = target_x
             self.cursor_y = target_y
+            self.prev_target_x = target_x
+            self.prev_target_y = target_y
             self.has_cursor_baseline = True
             ix = int(max(2, min(self.screen_width - 3, self.cursor_x)))
             iy = int(max(2, min(self.screen_height - 3, self.cursor_y)))
@@ -155,26 +168,34 @@ class DesktopController:
             except Exception:
                 return None
 
-        # 4. Small jitter dead-zone filter
-        dist = math.hypot(target_x - self.cursor_x, target_y - self.cursor_y)
-        if dist < self.jitter_dead_zone:
+        # 4. Precision dead-zone filter on input target motion
+        target_delta = math.hypot(target_x - self.prev_target_x, target_y - self.prev_target_y)
+        dist_to_cursor = math.hypot(target_x - self.cursor_x, target_y - self.cursor_y)
+
+        if target_delta < self.jitter_dead_zone and dist_to_cursor < self.jitter_dead_zone:
             return int(self.cursor_x), int(self.cursor_y)
 
-        # 5. Speed-adaptive smoothing:
-        # Fast movement -> higher alpha (instant snap, no drag)
-        # Slow/micro movement -> lower alpha (precision targeting, anti-tremor)
-        base_factor = config.SMOOTHING_FACTOR
-        if dist > 45.0:
-            speed_ratio = min(1.0, (dist - 45.0) / 120.0)
-            smooth_factor = base_factor + (0.70 - base_factor) * speed_ratio
-        elif dist < 18.0:
-            speed_ratio = dist / 18.0
-            smooth_factor = 0.18 + (base_factor - 0.18) * speed_ratio
+        if target_delta >= self.jitter_dead_zone:
+            self.prev_target_x = target_x
+            self.prev_target_y = target_y
         else:
-            smooth_factor = base_factor
+            # Hand held steady: damp micro-tremor by anchoring to stable target
+            target_x = self.prev_target_x
+            target_y = self.prev_target_y
 
-        self.cursor_x += smooth_factor * (target_x - self.cursor_x)
-        self.cursor_y += smooth_factor * (target_y - self.cursor_y)
+        dist = math.hypot(target_x - self.cursor_x, target_y - self.cursor_y)
+        if dist < 0.75:
+            self.cursor_x = target_x
+            self.cursor_y = target_y
+        else:
+            # 5. Continuous velocity-adaptive smoothing
+            base_factor = config.SMOOTHING_FACTOR
+            speed_factor = 1.0 / (1.0 + math.exp(-0.06 * (dist - 28.0)))
+            smooth_factor = 0.22 + (0.90 - 0.22) * speed_factor
+            smooth_factor = max(0.18, min(0.92, smooth_factor * (base_factor / 0.35)))
+
+            self.cursor_x += smooth_factor * (target_x - self.cursor_x)
+            self.cursor_y += smooth_factor * (target_y - self.cursor_y)
 
         # Clamp target integers to prevent PyAutoGUI corner failsafe triggers
         ix = int(max(2, min(self.screen_width - 3, self.cursor_x)))
@@ -205,9 +226,31 @@ class DesktopController:
                 pass
         return False
 
+    def trigger_right_click(self, current_time: Optional[float] = None) -> bool:
+        """Triggers a single right mouse click with debouncing."""
+        if current_time is None:
+            current_time = time.perf_counter()
+
+        if current_time - self.last_right_click_time >= config.CLICK_COOLDOWN:
+            try:
+                pyautogui.rightClick()
+                self.last_right_click_time = current_time
+                return True
+            except pyautogui.FailSafeException:
+                raise
+            except Exception:
+                pass
+        return False
+
     def release_click_state(self) -> None:
-        """Re-arms click readiness when pinch is released."""
+        """Re-arms click readiness when pinch is released and drops any active drag."""
         self.click_ready = True
+        if self.is_dragging:
+            try:
+                pyautogui.mouseUp()
+            except Exception:
+                pass
+            self.is_dragging = False
 
     def trigger_scroll(self, scroll_dy: float, current_time: Optional[float] = None) -> bool:
         """Translates vertical hand movement into mouse wheel scrolling."""
@@ -293,9 +336,28 @@ class DesktopController:
                 pass
         return False
 
-    def reset_cursor_baseline(self) -> None:
-        """Resets cursor tracking baseline when right hand is lost."""
-        self.has_cursor_baseline = False
+    def reset_cursor_baseline(self, force: bool = False) -> None:
+        """Resets cursor tracking baseline when right hand is lost or explicitly reset."""
+        if force:
+            self.has_cursor_baseline = False
+            self.baseline_grace_frames = 0
+            if self.is_dragging:
+                try:
+                    pyautogui.mouseUp()
+                except Exception:
+                    pass
+                self.is_dragging = False
+            return
+
+        self.baseline_grace_frames += 1
+        if self.baseline_grace_frames > self.max_grace_frames:
+            self.has_cursor_baseline = False
+            if self.is_dragging:
+                try:
+                    pyautogui.mouseUp()
+                except Exception:
+                    pass
+                self.is_dragging = False
 
     def execute(
         self,
@@ -305,7 +367,7 @@ class DesktopController:
     ) -> None:
         """
         Executes arbitrated desktop automation actions based on current gesture frame result.
-        Strictly observes safety priorities.
+        Supports simultaneous two-hand actions, drag & drop, right-click, and failsafe safety.
         """
         if current_time is None:
             current_time = time.perf_counter()
@@ -314,7 +376,7 @@ class DesktopController:
         # Priority 1 & 2: Safety Pause or Ambiguous Hand Tracking (Zero Automation)
         # ----------------------------------------------------------------------
         if gestures.priority_level in ("SAFETY", "AMBIGUOUS"):
-            self.reset_cursor_baseline()
+            self.reset_cursor_baseline(force=True)
             self.release_click_state()
             return
 
@@ -323,33 +385,63 @@ class DesktopController:
         # ----------------------------------------------------------------------
         if gestures.is_zoom_active:
             self.trigger_zoom(gestures.zoom_delta, current_time)
-            self.reset_cursor_baseline()
-            # Two-hand zoom suppresses individual click and volume
+            self.reset_cursor_baseline(force=True)
+            self.release_click_state()
             return
 
         # ----------------------------------------------------------------------
-        # Right Hand Actions: Cursor Movement & Left Click
+        # Right Hand Actions: Cursor Movement, Left Click, Drag & Drop, Right Click
         # ----------------------------------------------------------------------
+        cursor_hand = None
+        if roles is not None:
+            cursor_hand = roles.right_hand if roles.right_hand is not None else roles.left_hand
+
         if gestures.right is not None:
             if gestures.right.name == "PINCH":
                 self.trigger_left_click(current_time)
+                # Drag & Drop: Holding pinch and moving activates mouse down
+                if (
+                    getattr(config, "DRAG_ENABLED", True)
+                    and cursor_hand is not None
+                    and len(cursor_hand.landmarks) > 8
+                ):
+                    pinch_tip = cursor_hand.landmarks[8]
+                    if not self.is_dragging:
+                        if self.drag_start_time == 0.0:
+                            self.drag_start_time = current_time
+                        elif (current_time - self.drag_start_time) >= 0.20:
+                            try:
+                                pyautogui.mouseDown()
+                                self.is_dragging = True
+                            except pyautogui.FailSafeException:
+                                raise
+                            except Exception:
+                                pass
+                    if self.is_dragging:
+                        self.update_cursor(pinch_tip[0], pinch_tip[1])
+
+            elif gestures.right.name == "RIGHT PINCH":
+                self.release_click_state()
+                self.trigger_right_click(current_time)
+
             else:
                 self.release_click_state()
 
             if gestures.right.name == "INDEX UP":
-                if roles is not None and roles.right_hand is not None and len(roles.right_hand.landmarks) > 8:
-                    tip = roles.right_hand.landmarks[8]
+                self.drag_start_time = 0.0
+                if cursor_hand is not None and len(cursor_hand.landmarks) > 8:
+                    tip = cursor_hand.landmarks[8]
                     self.update_cursor(tip[0], tip[1])
                 else:
-                    self.reset_cursor_baseline()
-            else:
-                self.reset_cursor_baseline()
+                    self.reset_cursor_baseline(force=False)
+            elif gestures.right.name != "PINCH" or not self.is_dragging:
+                self.reset_cursor_baseline(force=False)
         else:
-            self.reset_cursor_baseline()
+            self.reset_cursor_baseline(force=False)
             self.release_click_state()
 
         # ----------------------------------------------------------------------
-        # Left Hand Actions: Scroll, Volume, Media, Swipe
+        # Left Hand Actions: Scroll, Volume, Media, Swipe (Runs Simultaneously!)
         # ----------------------------------------------------------------------
         if gestures.left is not None:
             if gestures.left.name == "INDEX + MIDDLE (PEACE)":

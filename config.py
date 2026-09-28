@@ -25,15 +25,21 @@ TARGET_FPS: int = 30
 # Default active mode on startup ("DESKTOP", "MEDIA", or "PRESENTATION")
 DEFAULT_MODE: str = "DESKTOP"
 
-# Fast downscaled resolution for real-time MediaPipe inference (balances 25+ FPS & accuracy)
-INFERENCE_WIDTH: int = 360
-INFERENCE_HEIGHT: int = 270
+# Fast downscaled resolution for real-time MediaPipe inference (balances 25+ FPS & high landmark precision)
+INFERENCE_WIDTH: int = 480
+INFERENCE_HEIGHT: int = 360
 
 # ==============================================================================
 # MediaPipe Hand Tracking Settings (AirControl V2 Two-Hand Tracking)
 # ==============================================================================
-# Model complexity: 0 = Lite (fastest, 25+ FPS), 1 = Full (default)
-MODEL_COMPLEXITY: int = 0
+# Model complexity: 0 = Lite (fastest), 1 = Full (high accuracy, zero jitter)
+MODEL_COMPLEXITY: int = 1
+
+# Enable pinch-to-drag (holding pinch and moving hand drags windows/files/text)
+DRAG_ENABLED: bool = True
+
+# Enable right-click gesture (thumb-middle finger pinch on Right hand)
+RIGHT_CLICK_ENABLED: bool = True
 
 # Minimum confidence value ([0.0, 1.0]) for hand detection to be considered successful.
 MEDIAPIPE_DETECTION_CONFIDENCE: float = 0.60
@@ -80,10 +86,10 @@ SMOOTHING_FACTOR: float = 0.35
 PINCH_THRESHOLD: float = 0.05
 
 # Minimum normalized vertical movement required to register a scroll step.
-SCROLL_THRESHOLD: float = 0.02
+SCROLL_THRESHOLD: float = 0.008
 
 # Number of scroll units to apply per trigger.
-SCROLL_AMOUNT: int = 30
+SCROLL_AMOUNT: int = 35
 
 # Minimum normalized horizontal displacement over recent frames to register a swipe.
 SWIPE_THRESHOLD: float = 0.15
@@ -110,10 +116,10 @@ VOLUME_UPDATE_THRESHOLD: float = 0.02
 # Action Cooldowns (Debouncing to Prevent Accidental Multiple Triggers)
 # ==============================================================================
 # Cooldown between consecutive mouse clicks in seconds.
-CLICK_COOLDOWN: float = 0.40
+CLICK_COOLDOWN: float = 0.35
 
 # Cooldown between consecutive scroll actions in seconds.
-SCROLL_COOLDOWN: float = 0.10
+SCROLL_COOLDOWN: float = 0.06
 
 # Cooldown between consecutive swipe slide changes in seconds.
 SWIPE_COOLDOWN: float = 0.60

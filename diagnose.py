@@ -23,7 +23,7 @@ import numpy as np
 
 def run_diagnostics():
     print("=" * 64)
-    print("       AirControl V1 — System Diagnostic Health Check")
+    print("       AirControl V2 — System Diagnostic Health Check")
     print("=" * 64)
 
     all_passed = True

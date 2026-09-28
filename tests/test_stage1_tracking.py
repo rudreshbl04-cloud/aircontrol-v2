@@ -135,6 +135,24 @@ class TestTwoHandRoles(unittest.TestCase):
         finally:
             config.FLIP_CAMERA = orig_flip
 
+    def test_model_complexity_toggle(self):
+        """Verify HandTracker can switch between Full (1) and Lite (0) complexity."""
+        from unittest.mock import MagicMock, patch
+        with patch("mediapipe.solutions.hands.Hands") as mock_hands_cls:
+            from src.hand_tracker import HandTracker
+            tracker = HandTracker(model_complexity=1)
+            self.assertEqual(tracker.model_complexity, 1)
+
+            # Toggle to Lite (0)
+            new_c = tracker.toggle_model_complexity()
+            self.assertEqual(new_c, 0)
+            self.assertEqual(tracker.model_complexity, 0)
+
+            # Toggle back to Full (1)
+            new_c2 = tracker.toggle_model_complexity()
+            self.assertEqual(new_c2, 1)
+            self.assertEqual(tracker.model_complexity, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

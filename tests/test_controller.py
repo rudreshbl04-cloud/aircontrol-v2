@@ -167,6 +167,115 @@ class TestDesktopController(unittest.TestCase):
         mock_click.assert_not_called()
         mock_move.assert_not_called()
 
+    @patch("pyautogui.rightClick")
+    def test_right_click_and_debounce(self, mock_right_click):
+        """Verify right click triggers on middle-pinch and debounces correctly."""
+        t0 = 5.0
+        fired = self.ctrl.trigger_right_click(current_time=t0)
+        self.assertTrue(fired)
+        mock_right_click.assert_called_once()
+
+        # Reject during debounce cooldown
+        fired_again = self.ctrl.trigger_right_click(current_time=t0 + 0.1)
+        self.assertFalse(fired_again)
+        self.assertEqual(mock_right_click.call_count, 1)
+
+        # Allow after cooldown
+        fired_later = self.ctrl.trigger_right_click(current_time=t0 + 0.5)
+        self.assertTrue(fired_later)
+        self.assertEqual(mock_right_click.call_count, 2)
+
+    @patch("pyautogui.mouseDown")
+    @patch("pyautogui.mouseUp")
+    @patch("pyautogui.moveTo")
+    @patch("pyautogui.click")
+    def test_drag_and_drop_motion(self, mock_click, mock_move, mock_up, mock_down):
+        """Verify holding pinch beyond threshold initiates mouse drag and moves cursor."""
+        r_pose = HandPose(name="PINCH", action="LEFT CLICK")
+        gestures = TwoHandGestureResult(right=r_pose, priority_level="CONTINUOUS")
+        roles = RoleFrameResult(right_hand=make_test_hand(index_tip=(0.50, 0.50)))
+
+        # Frame 1: initial pinch click
+        self.ctrl.execute(gestures=gestures, roles=roles, current_time=1.0)
+        mock_click.assert_called_once()
+        self.assertFalse(self.ctrl.is_dragging)
+
+        # Frame 2: held pinch > 0.20s initiates drag
+        roles2 = RoleFrameResult(right_hand=make_test_hand(index_tip=(0.55, 0.55)))
+        self.ctrl.execute(gestures=gestures, roles=roles2, current_time=1.25)
+        mock_down.assert_called_once()
+        self.assertTrue(self.ctrl.is_dragging)
+        mock_move.assert_called()
+
+        # Frame 3: release pinch releases drag via mouseUp
+        r_idle = HandPose(name="IDLE", action="NONE")
+        gestures_idle = TwoHandGestureResult(right=r_idle, priority_level="IDLE")
+        self.ctrl.execute(gestures=gestures_idle, roles=roles2, current_time=1.35)
+        mock_up.assert_called_once()
+        self.assertFalse(self.ctrl.is_dragging)
+
+    @patch("pyautogui.moveTo")
+    def test_continuous_velocity_smoothing(self, mock_move):
+        """Verify continuous smoothing scales smoothly without teleporting."""
+        # Establish baseline
+        self.ctrl.update_cursor(0.50, 0.50)
+        mock_move.reset_mock()
+
+        # Moderate movement
+        coords1 = self.ctrl.update_cursor(0.53, 0.53)
+        self.assertIsNotNone(coords1)
+        mock_move.assert_called_once()
+        c1_x, c1_y = coords1
+
+        mock_move.reset_mock()
+        # Fast movement - smoothly tracks forward without abrupt speed cliffs
+        coords2 = self.ctrl.update_cursor(0.60, 0.60)
+        self.assertIsNotNone(coords2)
+        mock_move.assert_called_once()
+        c2_x, c2_y = coords2
+
+        self.assertGreater(c2_x, c1_x)
+        self.assertGreater(c2_y, c1_y)
+
+    @patch("pyautogui.moveTo")
+    def test_cursor_baseline_grace_hold(self, mock_move):
+        """Verify brief 2-frame tracking loss does not destroy cursor baseline."""
+        # Establish baseline
+        self.ctrl.update_cursor(0.50, 0.50)
+        self.assertTrue(self.ctrl.has_cursor_baseline)
+
+        # Brief non-force reset for 2 frames
+        self.ctrl.reset_cursor_baseline(force=False)
+        self.ctrl.reset_cursor_baseline(force=False)
+        # Baseline must still be retained due to grace period!
+        self.assertTrue(self.ctrl.has_cursor_baseline)
+
+        # Force reset immediately drops baseline
+        self.ctrl.reset_cursor_baseline(force=True)
+        self.assertFalse(self.ctrl.has_cursor_baseline)
+
+    @patch("pyautogui.moveTo")
+    @patch("pyautogui.scroll")
+    def test_simultaneous_two_hand_execution(self, mock_scroll, mock_move):
+        """Verify Right Hand cursor movement and Left Hand scrolling execute together in same frame."""
+        r_pose = HandPose(name="INDEX UP", action="MOVE CURSOR")
+        l_pose = HandPose(name="INDEX + MIDDLE (PEACE)", action="SCROLL UP", scroll_dy=0.04)
+
+        gestures = TwoHandGestureResult(
+            right=r_pose,
+            left=l_pose,
+            priority_level="CONTINUOUS",
+            action_summary="Right: MOVE CURSOR | Left: SCROLL UP",
+        )
+        roles = RoleFrameResult(
+            right_hand=make_test_hand(role="RIGHT", index_tip=(0.52, 0.52)),
+            left_hand=make_test_hand(role="LEFT", index_tip=(0.25, 0.45)),
+        )
+
+        self.ctrl.execute(gestures=gestures, roles=roles, current_time=5.0)
+        mock_move.assert_called_once()
+        mock_scroll.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

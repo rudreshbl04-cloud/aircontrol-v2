@@ -57,17 +57,27 @@ def check_lighting(frame: np.ndarray, threshold: float = config.LOW_LIGHT_THRESH
 
 
 def open_webcam(camera_index: int, width: int, height: int) -> Optional[cv2.VideoCapture]:
-    """Attempts to open and configure the webcam device with native Windows backend."""
-    cap = cv2.VideoCapture(camera_index)
-    if not cap.isOpened():
-        cap = cv2.VideoCapture(camera_index, cv2.CAP_ANY)
+    """Attempts to open and configure the webcam device with auto-failover across available indices."""
+    candidate_indices = [camera_index] + [i for i in range(4) if i != camera_index]
 
-    if not cap.isOpened():
-        return None
+    for idx in candidate_indices:
+        cap = cv2.VideoCapture(idx)
+        if not cap.isOpened():
+            cap = cv2.VideoCapture(idx, cv2.CAP_ANY)
 
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-    return cap
+        if cap.isOpened():
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+            # Verify camera actually delivers valid image frames
+            ret, test_frame = cap.read()
+            if ret and test_frame is not None:
+                if idx != camera_index:
+                    print(f"[AirControl] Notice: Camera Index {camera_index} unavailable; auto-switched to active Index {idx}.")
+                    config.CAMERA_INDEX = idx
+                return cap
+            cap.release()
+
+    return None
 
 
 def main() -> None:
@@ -126,12 +136,15 @@ def main() -> None:
     print("\n" + "=" * 66)
     print("  AIRCONTROL V2 IS ACTIVE AND READY TO CONTROL YOUR LAPTOP!")
     print("  • Look at the GESTURE CHEATSHEET on the top-right of the screen.")
-    print("  • RIGHT HAND: Index Up (Move Mouse) | Thumb-Index Pinch (Click).")
+    print("  • RIGHT HAND: Index Up (Move Mouse) | Pinch (Click / Drag) | Middle Pinch (Right Click).")
     print("  • LEFT HAND: Peace Sign (Scroll Up/Down) | 3 Fingers (System Volume).")
+    print("  • BOTH AT A TIME: Simultaneous cursor navigation & scrolling.")
     print("  • BOTH HANDS: Pinch Both Hands (Screen Zoom In/Out).")
+    print("  • Press 'T' to toggle Tracking Model (Full High-Precision vs Lite Fast).")
     print("  • Press 'Space' to toggle PAUSE / RESUME.")
     print("  • Press 'M' to cycle Modes (Desktop / Media / Presentation).")
     print("  • Press 'S' to open Settings & Sensitivity GUI.")
+    print("  • Press 'R' to reset tracking baseline.")
     print("  • Press 'Q' to exit.")
     print("=" * 66 + "\n")
 
@@ -255,8 +268,13 @@ def main() -> None:
                 except Exception as err:
                     print(f"[AirControl] Notice launching settings: {err}")
                 is_paused = prev_pause
+            elif key in (ord('t'), ord('T')):
+                new_c = tracker.toggle_model_complexity()
+                model_name = "FULL (High Precision)" if new_c == 1 else "LITE (High Speed)"
+                controller.reset_cursor_baseline(force=True)
+                print(f"[AirControl Model] Tracking model switched to: {model_name}")
             elif key in (ord('r'), ord('R')):
-                controller.reset_cursor_baseline()
+                controller.reset_cursor_baseline(force=True)
                 print("[AirControl] Cursor baseline reset.")
 
     except KeyboardInterrupt:

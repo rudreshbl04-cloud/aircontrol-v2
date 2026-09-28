@@ -60,8 +60,8 @@ class CameraOverlay:
     def draw_gesture_cheatsheet(self, frame: np.ndarray) -> None:
         """Renders an on-screen visual cheatsheet guide so users always know which gesture to make."""
         h, w, _ = frame.shape
-        guide_w = 230
-        guide_h = 145
+        guide_w = 245
+        guide_h = 180
         gx = w - guide_w - 15
         gy = 10
 
@@ -82,13 +82,15 @@ class CameraOverlay:
 
         hints = [
             ("Right Index Up", "Move Mouse", COLOR_RIGHT_HAND),
-            ("Right Pinch", "Left Click", COLOR_RIGHT_HAND),
+            ("Right Pinch", "Click / Drag", COLOR_RIGHT_HAND),
+            ("Right Mid Pinch", "Right Click", COLOR_RIGHT_HAND),
             ("Left Peace (2)", "Scroll Up/Down", COLOR_LEFT_HAND),
             ("Left 3-Fingers", "System Volume", COLOR_LEFT_HAND),
+            ("Both at a Time", "Move + Scroll", COLOR_ACTIVE_GREEN),
             ("Both Pinch", "Screen Zoom", COLOR_ZOOM),
         ]
 
-        text_y = gy + 42
+        text_y = gy + 40
         for gesture_txt, action_txt, color in hints:
             # Bullet dot
             cv2.circle(frame, (gx + 12, text_y - 4), 3, color, -1)
@@ -97,7 +99,7 @@ class CameraOverlay:
                 f"{gesture_txt}:",
                 (gx + 22, text_y),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.36,
+                0.34,
                 (200, 200, 200),
                 1,
                 cv2.LINE_AA,
@@ -105,14 +107,14 @@ class CameraOverlay:
             cv2.putText(
                 frame,
                 action_txt,
-                (gx + 130, text_y),
+                (gx + 135, text_y),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.36,
+                0.34,
                 color,
                 1,
                 cv2.LINE_AA,
             )
-            text_y += 20
+            text_y += 19
 
     def draw_hand_card(
         self,
@@ -336,10 +338,23 @@ class CameraOverlay:
         cv2.putText(
             frame,
             f"FPS: {fps:.1f}",
-            (285, 60),
+            (260, 60),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.42,
+            0.40,
             (0, 255, 200),
+            1,
+            cv2.LINE_AA,
+        )
+
+        # Model complexity status badge
+        model_lbl = "FULL" if getattr(config, "MODEL_COMPLEXITY", 1) == 1 else "LITE"
+        cv2.putText(
+            frame,
+            f"Model: {model_lbl} (T)",
+            (345, 60),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.40,
+            (255, 220, 100),
             1,
             cv2.LINE_AA,
         )
@@ -437,10 +452,10 @@ class CameraOverlay:
         # 9. Bottom Navigation Hints
         cv2.putText(
             frame,
-            "Keys: Space = Pause/Resume | M = Mode | S = Settings | Q = Quit",
+            "Keys: Space = Pause | M = Mode | T = Model (Full/Lite) | R = Reset | S = Settings | Q = Quit",
             (10, h - 10),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.40,
+            0.36,
             (160, 160, 160),
             1,
             cv2.LINE_AA,

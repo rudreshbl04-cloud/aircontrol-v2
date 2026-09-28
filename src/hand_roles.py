@@ -141,14 +141,26 @@ class HandRoleManager:
         if len(candidates) == 1:
             role, rh, idx = candidates[0]
 
-            # Use spatial heuristic if confidence is low:
-            # If confidence is below threshold, verify against previous position continuity
+            # Determine physical role with robust spatial & continuity heuristics
+            # Respect raw MediaPipe classification when score meets confidence threshold
             assigned_role = role
+            
             if rh.score < self.confidence_threshold:
                 if self.last_right_center and self.last_left_center:
                     d_right = self._distance(rh.center, self.last_right_center)
                     d_left = self._distance(rh.center, self.last_left_center)
-                    assigned_role = "RIGHT" if d_right < d_left else "LEFT"
+                    if min(d_right, d_left) < 0.35:
+                        assigned_role = "RIGHT" if d_right < d_left else "LEFT"
+                elif self.last_right_center and self._distance(rh.center, self.last_right_center) < 0.30:
+                    assigned_role = "RIGHT"
+                elif self.last_left_center and self._distance(rh.center, self.last_left_center) < 0.30:
+                    assigned_role = "LEFT"
+                else:
+                    # Spatial screen hemisphere heuristic for low confidence single hand
+                    if config.FLIP_CAMERA:
+                        assigned_role = "RIGHT" if rh.center[0] >= 0.45 else "LEFT"
+                    else:
+                        assigned_role = "LEFT" if rh.center[0] >= 0.45 else "RIGHT"
 
             assigned = AssignedHand(
                 role=assigned_role,
@@ -222,8 +234,8 @@ class HandRoleManager:
             self.was_left_active = True
             return result
 
-        # Both hands were labeled with the same role by MediaPipe (Conflict)
-        # Attempt resolution via position continuity or spatial position
+        # Both hands were labeled with the same role by MediaPipe (Duplicate Conflict)
+        # Attempt resolution via position continuity or horizontal spatial position
         if self.last_right_center and self.last_left_center:
             # Continuity match: assign based on proximity to previous locations
             d_a_r = self._distance(hand_a_data.center, self.last_right_center)
@@ -235,32 +247,42 @@ class HandRoleManager:
                 assigned_right, assigned_left = (hand_a_data, idx_a), (hand_b_data, idx_b)
             else:
                 assigned_right, assigned_left = (hand_b_data, idx_b), (hand_a_data, idx_a)
+        else:
+            # Spatial separation resolution:
+            # In FLIP_CAMERA (mirrored selfie), hand with larger X is the physical RIGHT hand
+            if config.FLIP_CAMERA:
+                if hand_a_data.center[0] >= hand_b_data.center[0]:
+                    assigned_right, assigned_left = (hand_a_data, idx_a), (hand_b_data, idx_b)
+                else:
+                    assigned_right, assigned_left = (hand_b_data, idx_b), (hand_a_data, idx_a)
+            else:
+                if hand_a_data.center[0] <= hand_b_data.center[0]:
+                    assigned_right, assigned_left = (hand_a_data, idx_a), (hand_b_data, idx_b)
+                else:
+                    assigned_right, assigned_left = (hand_b_data, idx_b), (hand_a_data, idx_a)
 
-            result.right_hand = AssignedHand(
-                role="RIGHT",
-                landmarks=assigned_right[0].landmarks,
-                confidence=assigned_right[0].score,
-                center=assigned_right[0].center,
-                raw_label=assigned_right[0].raw_label,
-                raw_index=assigned_right[1],
-            )
-            result.left_hand = AssignedHand(
-                role="LEFT",
-                landmarks=assigned_left[0].landmarks,
-                confidence=assigned_left[0].score,
-                center=assigned_left[0].center,
-                raw_label=assigned_left[0].raw_label,
-                raw_index=assigned_left[1],
-            )
-            self.last_right_center = assigned_right[0].center
-            self.last_left_center = assigned_left[0].center
-            self.right_missing_frames = 0
-            self.left_missing_frames = 0
-            return result
-
-        # If no previous continuity and labels conflict: flag ambiguity
-        result.is_ambiguous = True
-        result.ambiguity_reason = "Hand assignment unclear: duplicate handedness"
+        result.right_hand = AssignedHand(
+            role="RIGHT",
+            landmarks=assigned_right[0].landmarks,
+            confidence=assigned_right[0].score,
+            center=assigned_right[0].center,
+            raw_label=assigned_right[0].raw_label,
+            raw_index=assigned_right[1],
+        )
+        result.left_hand = AssignedHand(
+            role="LEFT",
+            landmarks=assigned_left[0].landmarks,
+            confidence=assigned_left[0].score,
+            center=assigned_left[0].center,
+            raw_label=assigned_left[0].raw_label,
+            raw_index=assigned_left[1],
+        )
+        self.last_right_center = assigned_right[0].center
+        self.last_left_center = assigned_left[0].center
+        self.right_missing_frames = 0
+        self.left_missing_frames = 0
+        self.was_right_active = True
+        self.was_left_active = True
         return result
 
     def reset(self) -> None:
