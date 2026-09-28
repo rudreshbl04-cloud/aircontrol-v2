@@ -23,16 +23,26 @@ FLIP_CAMERA: bool = True
 TARGET_FPS: int = 30
 
 # ==============================================================================
-# MediaPipe Hand Tracking Settings
+# MediaPipe Hand Tracking Settings (AirControl V2 Two-Hand Tracking)
 # ==============================================================================
-# Minimum confidence value ([0.0, 1.0]) for the hand detection to be considered successful.
-MEDIAPIPE_DETECTION_CONFIDENCE: float = 0.7
+# Minimum confidence value ([0.0, 1.0]) for hand detection to be considered successful.
+MEDIAPIPE_DETECTION_CONFIDENCE: float = 0.65
 
 # Minimum confidence value ([0.0, 1.0]) for hand landmarks to be tracked successfully.
-MEDIAPIPE_TRACKING_CONFIDENCE: float = 0.7
+MEDIAPIPE_TRACKING_CONFIDENCE: float = 0.65
 
-# Maximum number of hands to detect. AirControl V1 strictly processes ONE primary hand.
-MAX_NUM_HANDS: int = 1
+# Maximum number of hands to detect. AirControl V2 processes up to TWO hands simultaneously.
+MAX_NUM_HANDS: int = 2
+
+# Minimum confidence threshold for MediaPipe handedness classification
+ROLE_CONFIDENCE_THRESHOLD: float = 0.60
+
+# Number of frames a hand can be momentarily lost (e.g. fast motion) before resetting state
+HAND_OCCLUSION_MAX_FRAMES: int = 5
+
+# Normalized distance threshold below which two hands are considered overlapping/ambiguous
+AMBIGUITY_DISTANCE_THRESHOLD: float = 0.08
+
 
 # ==============================================================================
 # Active Camera Region (Screen Mapping Bounds)
